@@ -1,0 +1,16 @@
+#wait for 3-5 min if it doesnt work. Sometimes it takes time to start the server
+#or restart the docker
+#docker compose not working for backend
+#to be done
+version: '3.8'
+
+services:
+  api: 
+    build: .
+    ports:
+      - '8000:8000'
+    volumes:
+      - ./app:/code/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+

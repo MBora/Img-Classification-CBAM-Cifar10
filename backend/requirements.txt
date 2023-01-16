@@ -1,0 +1,9 @@
+fastapi>=0.68.0,<0.69.0
+pydantic>=1.8.0,<2.0.0
+uvicorn>=0.15.0,<0.16.0
+gunicorn>=20.1.0,<21.0.0
+torch
+torchvision
+numpy
+matplotlib
+python-multipart
