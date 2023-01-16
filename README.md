@@ -5,7 +5,7 @@
 On two separate terminals, run the following commands
 ```ps
 cd frontend
-docker compose -d
+docker-compose up -d
 ```
 ```ps
 cd backend
