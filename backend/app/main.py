@@ -56,7 +56,7 @@ async def predict(image: UploadFile = File(...)):
     output, channel_attention_map, spatial_attention_map = model(img)
     _, pred = torch.max(output, 1)
 
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 10))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 4))
     ax1.imshow(channel_attention_map[0, 0].detach().numpy(), cmap='jet')
     ax1.set_title("channel attention map")
     ax2.imshow(spatial_attention_map[0, 0].detach().numpy(), cmap='jet')
