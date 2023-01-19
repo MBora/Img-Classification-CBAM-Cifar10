@@ -26,7 +26,7 @@ app.add_middleware(
 
 def load_model():
     model = CNN()
-    with open(os.path.join(os.path.dirname(__file__), 'myFinalModel.pth'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'FinalModel.pth'), 'rb') as f:
         model.load_state_dict(torch.load(f))
     model.eval()
     return model

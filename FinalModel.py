@@ -3,23 +3,20 @@ import numpy as np
 from torch.autograd import Variable
 from torch.optim import Adam
 import torch.nn.functional as F
-import torchvision
 import torch.nn as nn
 import torch
 from torchvision.datasets import CIFAR10
 from torchvision.transforms import transforms
 from torch.utils.data import DataLoader
 from PIL import Image
-import cv2
 
-
-# CIFAR10 dataset consists of 50K training images. We define the batch size of 10 to load 5,000 batches of images.
 batch_size = 10
 num_labels = 10
 classes = ('plane', 'car', 'bird', 'cat', 'deer',
            'dog', 'frog', 'horse', 'ship', 'truck')
 
-# For train set
+# transformations
+#Apply transformations to train set
 train_transformations = transforms.Compose([
     transforms.RandomCrop(32, padding=4),  # randomly crop the image
     transforms.RandomHorizontalFlip(),  # randomly flip the image horizontally
@@ -32,10 +29,11 @@ train_transformations = transforms.Compose([
 
 train_set = CIFAR10(root='./data', train=True,
                     transform=train_transformations, download=True)
+#DataLoader To convert data into
 train_loader = DataLoader(
     train_set, batch_size=batch_size, shuffle=True, num_workers=0)
 
-#For test set
+
 test_transformations = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
@@ -45,60 +43,68 @@ test_transformations = transforms.Compose([
 test_set = CIFAR10(root='./data', train=False,
                    transform=test_transformations, download=True)
 
-# Create a loader for the transformed test set
 test_loader = DataLoader(test_set, batch_size=batch_size,
                          shuffle=False, num_workers=0)
 
-# Print the number of images in the training set
-print("No. of images in one test set is: ", len(test_loader)*batch_size)
 print("No. of batches per epoch is: ", len(train_loader))
 
-
-class ChannelAttention(nn.Module):
-    def __init__(self, in_channels):
-        super(ChannelAttention, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=in_channels//16, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(in_channels=in_channels//16, out_channels=in_channels, kernel_size=3, padding=1)
+# To compute Channel attention
+class ChannelAttentionModule(nn.Module): 
+    def __init__(self, in_channels, reduction_ratio=8):
+        super(ChannelAttentionModule, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.fc1 = nn.Conv2d(in_channels, in_channels // reduction_ratio, kernel_size=3, padding=1, bias=False) #kernel size and padding can vary according to requirement
+        self.relu = nn.ReLU() #Activation function between convolution layers
+        self.fc2 = nn.Conv2d(in_channels // reduction_ratio, in_channels, kernel_size=3, padding=1, bias=False)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.conv2(x)
-        spatial_attention = self.sigmoid(x)
-        return spatial_attention
+        avg_pool_module = self.fc2(self.relu(self.fc1(self.avg_pool(x)))) #average pool channel
+        max_pool_module = self.fc2(self.relu(self.fc1(self.max_pool(x)))) #max pool channel
+        
+        out = self.sigmoid(avg_pool_module + max_pool_module) #out is the attention map
+        refined_feature_map = out * x #out*x is the refined feature map or the channel attention map
+        return refined_feature_map
 
-class SpatialAttention(nn.Module):
-    def __init__(self, channels):
-        super(SpatialAttention, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=channels, out_channels=channels//16, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(channels//16)
+#To compute spatial attention
+class SpatialAttentionModule(nn.Module):
+    def __init__(self):
+        super(SpatialAttentionModule, self).__init__()
+        #input channels come from one average channel and one spatial channel
+        self.conv1 = nn.Conv2d(in_channels=2, out_channels=1, kernel_size=3, padding=1) #kernel size and padding can vary according to requirement
+        self.bn1 = nn.BatchNorm2d(1)
         self.relu1 = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(in_channels=channels//16, out_channels=channels, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(in_channels=1, out_channels=1, kernel_size=3, padding=1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu1(x)
-        x = self.conv2(x)
-        spatial_attention = self.sigmoid(x)
-        return spatial_attention
+        avg_x = torch.mean(x, dim=1, keepdim=True) #Average pooling along a dimension
+        max_x, _ = torch.max(x, dim=1, keepdim=True) #Max pooling along a dimension
+        new_x = torch.cat([avg_x, max_x], dim=1) #Concatenation of both tesnors
+        #Layer inside spatial module
+        new_x = self.conv1(new_x)
+        new_x = self.relu1(new_x)
+        new_x = self.conv2(new_x)
+        new_x = self.sigmoid(new_x)
+        refined_feature_map = new_x * x #new_x*x is the refined feature map or the spatial attention map; x was the channel attention
+        return refined_feature_map
 
+#To combine channel and spatial attention modules i.e implement CBAM module
 class CBAM(nn.Module):
     def __init__(self, channels):
-        super(CBAM, self).__init__()
-        self.channel_attention = ChannelAttention(channels)
-        self.spatial_attention = SpatialAttention(channels)
+        super().__init__()
+        self.ca = ChannelAttentionModule(channels)
+        self.sa = SpatialAttentionModule()
 
     def forward(self, x):
-        channel_attention = self.channel_attention(x)
-        spatial_attention = self.spatial_attention(x)
-        attention = channel_attention * spatial_attention
-        out = attention * x
-        return x * attention, channel_attention, spatial_attention
-        
+        x = self.ca(x)
+        channel_attention = x.clone().detach()
+        x = self.sa(x)
+        spatial_attention = x.clone().detach()
+        return x, channel_attention, spatial_attention #spatial_attention and x is the same
 
-
+#Neural Network
 class CNN(nn.Module):
     def __init__(self):
         super(CNN, self).__init__()
@@ -110,7 +116,7 @@ class CNN(nn.Module):
         self.bn2 = nn.BatchNorm2d(64)
         self.relu2 = nn.ReLU(inplace=True)
         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout1 = nn.Dropout(p=0.25)
+        self.dropout1 = nn.Dropout(p=0.25) #0.25 gave better performance than p=0.5
         self.conv3 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1)
         self.bn3 = nn.BatchNorm2d(128)
         self.relu3 = nn.ReLU(inplace=True)
@@ -150,16 +156,15 @@ model = CNN()
 optimizer = Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
 loss_func = nn.CrossEntropyLoss()
 
-
 def saveModel():
-    path = "./myFinalModel.pth"
+    path = "./FinalModel.pth"
     torch.save(model.state_dict(), path)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("The model will run on", device)
 model.to(device)
 
-# validation
+# validation function to calculate the accuracy and loss for the validation set
 def validate():
     model.eval()
     valid_running_loss = 0.0
@@ -173,9 +178,9 @@ def validate():
             image = image.to(device)
             labels = labels.to(device)
 
-            outputs, channel, spatial = model(image)
+            outputs, _, _ = model(image)
 
-            # loss = F.cross_entropy(outputs, labels)
+            # loss = F.cross_entropy(outputs, labels) #either works
             loss = loss_func(outputs, labels)
             valid_running_loss += loss.item()
 
@@ -188,7 +193,7 @@ def validate():
     validation_acc = 100. * (valid_running_correct / len(test_loader.dataset))
     return validation_loss, validation_acc
 
-
+# training
 def train(num_epochs):
     
     best_accuracy = 0.0
@@ -197,7 +202,7 @@ def train(num_epochs):
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
-
+        
         for i, (images, labels) in enumerate(train_loader, 0):
             
             # get the inputs
@@ -230,7 +235,7 @@ def train(num_epochs):
             best_accuracy = validation_acc
 
         #we can also save model with best loss
-        #uncomment this to save model with best loss
+        #uncomment this to save model with best loss by also commenting validation accuracy section
         # if validation_loss < best_loss:
         #     print('Validation loss decreased ({:.6f} --> {:.6f}).  Saving model ...'.format(best_loss, validation_loss))
         #     saveModel()
@@ -257,10 +262,10 @@ def AccuracyPerClass(model, test_loader):
 
 
 if __name__ == "__main__":
-    
-    # Let's build our model
-    #after 8 epochs model seems to be overfitting
-    train(10)
+
+    print('Starting Training')
+    #Overfitting after 15-18 epochs
+    # train(8)
     print('Finished Training')
     img = Image.open("gata_cat_cat_face.jpg")
     transform = transforms.Compose([
@@ -274,8 +279,9 @@ if __name__ == "__main__":
 
 
     model = CNN()
-    path = "myFinalModel.pth"
-    model.load_state_dict(torch.load(path))
+    path = "FinalModel.pth"
+    model.load_state_dict(torch.load(f"{path}", map_location=torch.device(device=device)))
+    
     outputs, channel_attention_map, spatial_attention_map = model(img)
     AccuracyPerClass(model, test_loader)
 
